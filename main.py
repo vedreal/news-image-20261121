@@ -38,22 +38,13 @@ of three mid stories with pictograms (summit, Riyadh, markets); and
 an "ALSO" footer carrying the rest of the day.
 """
 
-import hashlib
-import os
-import struct
-import zlib
+import hashlib, os, struct, zlib
 
-W, H = 1024, 1024
+W = H = 1024
 
-PAPER = (247, 243, 232)
-INK = (26, 26, 26)
-NAVY = (22, 40, 63)
-RED = (176, 42, 32)
-GOLD = (201, 162, 39)
-BLUE = (47, 93, 140)
-GREEN = (46, 125, 74)
-ORANGE = (214, 106, 32)
-GREY = (120, 116, 104)
+PAPER, INK, NAVY = (247, 243, 232), (26, 26, 26), (22, 40, 63)
+RED, GOLD, BLUE = (176, 42, 32), (201, 162, 39), (47, 93, 140)
+GREEN, ORANGE, GREY = (46, 125, 74), (214, 106, 32), (120, 116, 104)
 LIGHT = (255, 255, 255)
 
 # ---------------------------------------------------------------- font
@@ -198,47 +189,58 @@ class Canvas:
     """An RGB raster with tiny vector helpers."""
 
     def __init__(self, w, h, bg):
-        self.w, self.h = w, h
-        self.px = bytearray(bg * (w * h))
+        self.w = w
+        self.h = h
+        self.px = bytearray(bg) * (w * h)
 
     def set(self, x, y, color):
-        if 0 <= x < self.w and 0 <= y < self.h:
-            i = (y * self.w + x) * 3
-            self.px[i:i + 3] = bytes(color)
+        if x < 0 or x >= self.w or y < 0 or y >= self.h:
+            return
+        i = (y * self.w + x) * 3
+        self.px[i] = color[0]
+        self.px[i + 1] = color[1]
+        self.px[i + 2] = color[2]
 
     def fill_rect(self, x, y, w, h, color):
-        x0, y0 = max(0, x), max(0, y)
-        x1, y1 = min(self.w, x + w), min(self.h, y + h)
+        x0 = x if x > 0 else 0
+        y0 = y if y > 0 else 0
+        x1 = x + w if x + w < self.w else self.w
+        y1 = y + h if y + h < self.h else self.h
+        if x1 <= x0 or y1 <= y0:
+            return
         row = bytes(color) * (x1 - x0)
         for yy in range(y0, y1):
             i = (yy * self.w + x0) * 3
             self.px[i:i + len(row)] = row
 
     def rect(self, x, y, w, h, color, t=2):
-        self.fill_rect(x, y, w, t, color)
-        self.fill_rect(x, y + h - t, w, t, color)
-        self.fill_rect(x, y, t, h, color)
-        self.fill_rect(x + w - t, y, t, h, color)
+        for k in range(t):
+            self.hline(x, y + k, w, color)
+            self.hline(x, y + h - 1 - k, w, color)
+            self.vline(x + k, y, h, color)
+            self.vline(x + w - 1 - k, y, h, color)
 
     def hline(self, x, y, length, color, t=1):
-        self.fill_rect(x, y, length, t, color)
+        for k in range(t):
+            self.fill_rect(x, y + k, length, 1, color)
 
     def vline(self, x, y, length, color, t=1):
-        self.fill_rect(x, y, t, length, color)
+        for k in range(t):
+            self.fill_rect(x + k, y, 1, length, color)
 
     def line(self, x0, y0, x1, y1, color, t=1):
         """Bresenham line, t = thickness in pixels."""
-        dx, dy = abs(x1 - x0), abs(y1 - y0)
-        sx = 1 if x0 < x1 else -1
-        sy = 1 if y0 < y1 else -1
+        dx = x1 - x0
+        dy = y1 - y0
+        sx = 1 if dx >= 0 else -1
+        sy = 1 if dy >= 0 else -1
+        dx, dy = abs(dx), abs(dy)
         err = dx - dy
         while True:
-            for a in range(t):
-                for b in range(t):
-                    self.set(x0 + a - t // 2, y0 + b - t // 2, color)
+            self._dot(x0, y0, color, t)
             if x0 == x1 and y0 == y1:
                 return
-            e2 = 2 * err
+            e2 = err * 2
             if e2 > -dy:
                 err -= dy
                 x0 += sx
@@ -246,30 +248,31 @@ class Canvas:
                 err += dx
                 y0 += sy
 
+    def _dot(self, x, y, color, t):
+        for a in range(t):
+            for b in range(t):
+                self.set(x + a - t // 2, y + b - t // 2, color)
+
     def circle(self, cx, cy, r, color):
         for dy in range(-r, r + 1):
-            dx = int((r * r - dy * dy) ** 0.5)
-            self.fill_rect(cx - dx, cy + dy, 2 * dx + 1, 1, color)
-
-    def ring(self, cx, cy, r, color, t=3):
-        for a in range(360):
-            import math
-            x = int(cx + r * math.cos(math.radians(a)))
-            y = int(cy + r * math.sin(math.radians(a)))
-            self.fill_rect(x, y, t, t, color)
+            for dx in range(-r, r + 1):
+                if dx * dx + dy * dy <= r * r:
+                    self.set(cx + dx, cy + dy, color)
 
     def triangle(self, x0, y0, x1, y1, x2, y2, color):
-        """Filled triangle via scanlines."""
-        pts = sorted([(x0, y0), (x1, y1), (x2, y2)], key=lambda p: p[1])
-        (ax, ay), (bx, by), (cx, cy) = pts
+        """Filled triangle via horizontal scanlines."""
+        verts = sorted(((x0, y0), (x1, y1), (x2, y2)), key=lambda p: p[1])
+        (ax, ay), (bx, by), (cx, cy) = verts
         for y in range(ay, cy + 1):
-            if y < by:
-                xa = ax + (bx - ax) * (y - ay) / max(1, by - ay)
-                xb = ax + (cx - ax) * (y - ay) / max(1, cy - ay)
-            else:
-                xa = bx + (cx - bx) * (y - by) / max(1, cy - by)
-                xb = ax + (cx - ax) * (y - ay) / max(1, cy - ay)
-            self.fill_rect(int(min(xa, xb)), y, int(abs(xb - xa)) + 1, 1, color)
+            f_top = (y - ay) / (by - ay) if by > ay else 0
+            f_all = (y - ay) / (cy - ay) if cy > ay else 0
+            xa = ax + (bx - ax) * f_top
+            xb = ax + (cx - ax) * f_all
+            if y >= by:
+                f_bot = (y - by) / (cy - by) if cy > by else 0
+                xa = bx + (cx - bx) * f_bot
+            lo, hi = (xa, xb) if xa <= xb else (xb, xa)
+            self.fill_rect(int(lo), y, int(hi - lo) + 1, 1, color)
 
     def text(self, x, y, s, scale, color):
         s = _clean(s)
@@ -282,17 +285,13 @@ class Canvas:
         return cx - x - scale
 
     def text_centred(self, cx, y, s, scale, color):
-        w = text_width(s, scale)
-        return self.text(cx - w // 2, y, s, scale, color)
+        half = text_width(s, scale) // 2
+        return self.text(cx - half, y, s, scale, color)
 
     def paragraph(self, x, y, s, scale, color, max_chars, leading=None):
-        if leading is None:
-            leading = 9 * scale
-        yy = y
-        for line in wrap(s, max_chars):
-            self.text(x, yy, line, scale, color)
-            yy += leading
-        return yy
+        step = leading if leading is not None else 9 * scale
+        for i, line in enumerate(wrap(s, max_chars)):
+            self.text(x, y + i * step, line, scale, color)
 
 
 def to_png(c):
@@ -349,25 +348,6 @@ def pic_summit(c, x, y, w, h):
     c.fill_rect(x + 8, base, w - 16, 5, INK)
 
 
-def pic_bridge(c, x, y, w, h):
-    """A bridge under an explosion starburst."""
-    base = y + h - 14
-    cx = x + w // 2
-    for k in range(8):
-        import math
-        a = math.radians(k * 45 + 10)
-        c.line(cx, y + 24, int(cx + 20 * math.cos(a)),
-               int(y + 24 + 20 * math.sin(a)), ORANGE, 3)
-    c.circle(cx, y + 24, 9, RED)
-    c.circle(cx, y + 24, 4, GOLD)
-    c.fill_rect(x + 10, base - 5, w - 20, 5, NAVY)
-    for px in (x + 34, x + w // 2 - 4, x + w - 42):
-        c.fill_rect(px, base - 22, 8, 17, NAVY)
-    c.line(x + 10, base - 22, x + w - 10, base - 22, NAVY, 2)
-    c.line(x + 10, base - 5, cx, base - 30, NAVY, 2)
-    c.line(x + w - 10, base - 5, cx, base - 30, NAVY, 2)
-
-
 def pic_tower(c, x, y, w, h):
     """Skyscraper hit by a missile: impact burst at its top corner."""
     tx, tw = x + w // 2 - 30, 60
@@ -402,15 +382,6 @@ def pic_chart(c, x, y, w, h):
     ex, ey = pts[-1]
     c.line(ex, ey, ex - 16, ey - 4, RED, 5)
     c.line(ex, ey, ex - 4, ey - 16, RED, 5)
-
-
-def pic_health(c, x, y, w, h):
-    """A green shield of health: circle, cross, check mark."""
-    cx, cy = x + w // 2, y + h // 2
-    c.circle(cx, cy, 28, GREEN)
-    c.ring(cx, cy, 28, (34, 94, 56), 3)
-    c.fill_rect(cx - 15, cy - 5, 30, 10, LIGHT)
-    c.fill_rect(cx - 5, cy - 15, 10, 30, LIGHT)
 
 
 def pic_strike(c, x, y, w, h):
@@ -534,12 +505,13 @@ def draw():
 def main():
     out_dir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
     os.makedirs(out_dir, exist_ok=True)
-    data = to_png(draw())
+    image = draw()
+    data = to_png(image)
     path = os.path.join(out_dir, "entry.png")
     with open(path, "wb") as f:
         f.write(data)
-    print("wrote %s (%d bytes, sha256 %s)"
-          % (path, len(data), hashlib.sha256(data).hexdigest()))
+    digest = hashlib.sha256(data).hexdigest()
+    print("wrote %s (%d bytes, sha256 %s)" % (path, len(data), digest))
 
 
 if __name__ == "__main__":
